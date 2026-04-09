@@ -8788,7 +8788,10 @@ function mylottoexpertExtractDrawNumbersFromRow($gameId, $row)
     // are not included in lottery_skip_config.json and are not part of the normalized
     // extra_ball / extra_ball_2 aliases. If we still have no extracted extra value, scan the
     // most common bonus column names directly so daily bonus results display and score.
-    if (empty($result['extra'])) {
+    // Guard: only run this scan for games that declare at least one extra ball. Without this
+    // guard, the alias scan can inject a false extra for no-extra games (e.g. Texas Cash 5)
+    // when their draw table happens to have a column whose name matches an alias.
+    if (empty($result['extra']) && (int)($fields['num_extra_expected'] ?? 0) > 0) {
         $__commonExtraAliases = array(
             'bonus_ball','bonus_ball_2','bonus','bonus2','bonus_number','bonus_num',
             'fireball','fire_ball','wildball','wild_ball','wild','fb','wb',
@@ -8873,7 +8876,11 @@ function mylottoexpertExtractDrawNumbersFromRow($gameId, $row)
         $__expectedExtra = (int)($__cfg['num_extra_balls_drawn'] ?? 0);
         $__table = (string)($spec['dbCol'] ?? '');
         $__drawDate = isset($row['draw_date']) ? trim((string)$row['draw_date']) : '';
-        if ($__expectedExtra >= 1 && $__table !== '' && $__drawDate !== '') {
+        // Guard: only run the sibling-F lookup for daily lotteries. Regular lotteries
+        // (e.g. MegaMillions, Powerball) do not use sibling-F game rows, and running
+        // this lookup for them can inject the wrong value when the draw table happens
+        // to contain rows whose game_id ends in F.
+        if ($__expectedExtra >= 1 && $__table !== '' && $__drawDate !== '' && !empty($__cfg['is_daily'])) {
             $__fbGameId = strtoupper(trim((string)$gameId)) . 'F';
             $__db = JFactory::getDbo();
             $__fbQ = $__db->getQuery(true)
@@ -8908,6 +8915,13 @@ function mylottoexpertExtractDrawNumbersFromRow($gameId, $row)
                 }
             }
         }
+    }
+
+    // Final guard: if the game spec declares no extra balls, discard any extras that
+    // fallback paths (alias scan, sibling-F lookup, etc.) may have inferred. This
+    // ensures no-extra lotteries can never receive a false extra from this function.
+    if ((int)($fields['num_extra_expected'] ?? 0) === 0) {
+        $result['extra'] = array();
     }
 
     return $result;
@@ -9428,6 +9442,13 @@ function scoreRunFromDrawMap($drawMap, $gameId, $drawDate, array $predMain, $pre
     $drawParts = mylottoexpertExtractDrawNumbersFromRow($gameId, $row);
     $drawMain  = isset($drawParts['main'])  && is_array($drawParts['main'])  ? array_values($drawParts['main'])  : array();
     $drawExtra = isset($drawParts['extra']) && is_array($drawParts['extra']) ? array_values($drawParts['extra']) : array();
+
+    // If the game spec declares no extra balls, discard any extras the extractor may
+    // have inferred via fallback paths. This prevents false extras in scoring results.
+    $__srfFields = getDrawFields($gameId);
+    if ((int)($__srfFields['num_extra_expected'] ?? 0) === 0) {
+        $drawExtra = array();
+    }
 
     if (empty($drawMain)) {
         return $empty;
@@ -10381,6 +10402,14 @@ foreach ($groups as $__gKey => $__g) {
         if ($__groupHasDaily) {
             $__expectedExtraCount = (int)($tableInfo[$__g['game_id']]['num_extra_expected'] ?? $__expectedExtraCount);
         }
+        // For games that the config declares as having no extra balls, do not allow
+        // saved prediction data to inflate $__expectedExtraCount above zero. Without
+        // this guard, a prediction that accidentally stores extra_ball_numbers triggers
+        // the supplemental raw-row scan, which can pick up non-ball columns (such as
+        // the last main ball column or a jackpot field) as a false extra.
+        if ((int)($tableInfo[$__g['game_id']]['num_extra_expected'] ?? 0) === 0) {
+            $__expectedExtraCount = 0;
+        }
 
         if (!$__preferCanonicalDrawLookup && !empty($drawMap) && isset($drawMap[$__drawMapLegacyKey])) {
             // Use preloaded, normalized row (same source as $bestOpps / scoreRunFromDrawMap)
@@ -10516,11 +10545,22 @@ foreach ($groups as $__gKey => $__g) {
                     if (in_array($__sk, $__suppConfigured, true)) { continue; }
                     if ($__sv === '' || $__sv === null || !preg_match('/^\d+$/', (string)$__sv)) { continue; }
                     $__gv = (int)$__sv;
+                    // For regular lotteries, skip values outside the plausible range for a
+                    // lottery ball (1-99). This prevents large numeric columns such as jackpot
+                    // amounts from being mistaken for an extra ball.
+                    if (!$__groupHasDaily && ($__gv < 1 || $__gv > 99)) { continue; }
                     if (($__groupHasDaily || $__gv > 0) && !in_array($__gv, $__grpExtra, true)) {
                         $__grpExtra[] = $__gv;
                     }
                 }
             }
+        }
+
+        // Final guard: if the game config declares 0 extra balls, discard any extras
+        // that any extraction path may have placed into $__grpExtra. This is the last
+        // line of defence to prevent a false extra reaching the display or scoring.
+        if ((int)($tableInfo[$__g['game_id']]['num_extra_expected'] ?? 0) === 0) {
+            $__grpExtra = array();
         }
 
         $__diagRawKeys = is_array($__diagRawRow) ? array_keys($__diagRawRow) : array();
