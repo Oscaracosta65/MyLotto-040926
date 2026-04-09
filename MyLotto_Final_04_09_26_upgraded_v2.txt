@@ -10545,9 +10545,10 @@ foreach ($groups as $__gKey => $__g) {
                     if (in_array($__sk, $__suppConfigured, true)) { continue; }
                     if ($__sv === '' || $__sv === null || !preg_match('/^\d+$/', (string)$__sv)) { continue; }
                     $__gv = (int)$__sv;
-                    // For regular lotteries, skip values outside the plausible range for a
-                    // lottery ball (1-99). This prevents large numeric columns such as jackpot
-                    // amounts from being mistaken for an extra ball.
+                    // For regular lotteries, reject values outside the range 1-99. Extra balls
+                    // for all known regular lotteries fall within this range (e.g. Mega Ball
+                    // 1-25, Powerball 1-26, Lucky Star 1-12). Jackpot amounts are in the
+                    // millions and are safely excluded by this upper bound.
                     if (!$__groupHasDaily && ($__gv < 1 || $__gv > 99)) { continue; }
                     if (($__groupHasDaily || $__gv > 0) && !in_array($__gv, $__grpExtra, true)) {
                         $__grpExtra[] = $__gv;
